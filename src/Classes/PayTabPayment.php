@@ -9,35 +9,25 @@ class PayTabPayment implements PaymentInterface{
     private $paytab_profile_id;
     private $paytab_base_url;
     private $paytab_server_key;
-    public function __construct()
+    private $http;
+    public function __construct(Http $http)
     {
         $this->paytab_profile_id = config('nafezly-payments.PAYTAB_PROFILE_ID');
         $this->paytab_base_url = config('nafezly-payments.PAYTAB_BASE_URL');
         $this->paytab_server_key = config('nafezly-payments.PAYTAB_SERVER_KEY');
- 
+        $this->http = $http;
     }
 
 
-    public function sendRequest($request_url, $data, $request_method = null){
 
+    public function sendRequest($request_url, $data, $request_method = 'POST')
+    {
         $data['profile_id'] = $this->paytab_profile_id;
-        $curl = curl_init();
-        curl_setopt_array($curl, array(
-            CURLOPT_URL => $this->paytab_base_url . $request_url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_ENCODING => '',
-            CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 0,
-            CURLOPT_CUSTOMREQUEST => isset($request_method) ? $request_method : 'POST',
-            CURLOPT_POSTFIELDS => json_encode($data, true),
-            CURLOPT_HTTPHEADER => array(
-                'authorization:' . $this->paytab_server_key,
-                'Content-Type:application/json'
-            ),
-        ));
 
-        $response = json_decode(curl_exec($curl), true);
-        curl_close($curl);
+        $response = $this->http->withHeaders([
+            'Authorization' => $this->paytab_server_key,
+        ])->$request_method($this->paytab_base_url . $request_url, $data)->json();
+
         return $response;
     }
 
@@ -56,7 +46,7 @@ class PayTabPayment implements PaymentInterface{
     public function pay($amount , $user_first_name = null , $user_email , $user_phone ,  $currency , $paypage_lang = "en", $callback , $return){
 
         $order_id = uniqid();
-        $get_url_token = Http::withHeaders(['content-type' => 'application/json'])
+        $get_url_token = Http::withHeaders(['content-type' => 'application/json']);
         $plugin = new PayTabPayment();
         $request_url = 'payment/request';
         $data = [
