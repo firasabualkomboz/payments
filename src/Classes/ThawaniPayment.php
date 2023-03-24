@@ -10,10 +10,10 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Nafezly\Payments\Exceptions\MissingPaymentInfoException;
 use Nafezly\Payments\Interfaces\PaymentInterface;
+use Nafezly\Payments\Classes\BaseController;
 
-class ThawaniPayment implements PaymentInterface
+class ThawaniPayment extends BaseController implements PaymentInterface
 {
-
     private $thawani_url;
     private $thawani_api_key;
     private $thawani_publishable_key;
@@ -38,12 +38,11 @@ class ThawaniPayment implements PaymentInterface
      * @return Application|RedirectResponse|Redirector
      * @throws MissingPaymentInfoException
      */
-    public function pay($amount, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null)
+    public function pay($amount = null, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null)
     {
-        if (is_null($user_first_name)) throw new MissingPaymentInfoException('user_first_name', 'Thawani');
-        if (is_null($user_last_name)) throw new MissingPaymentInfoException('user_last_name', 'Thawani');
-        if (is_null($user_phone)) throw new MissingPaymentInfoException('user_phone', 'Thawani');
-
+        $this->setPassedVariablesToGlobal($amount,$user_id,$user_first_name,$user_last_name,$user_email,$user_phone,$source);
+        $required_fields = ['amount', 'user_first_name', 'user_last_name', 'user_email', 'user_phone'];
+        $this->checkRequiredFields($required_fields, 'Thawani');
         $unique_id = uniqid();
         $response = Http::withHeaders([
             'Content-Type' => "application/json",
@@ -53,16 +52,16 @@ class ThawaniPayment implements PaymentInterface
             "products" => [
                 [
                     "name" => "credit",
-                    "unit_amount" => $amount * 1000,
+                    "unit_amount" => $this->amount * 1000,
                     "quantity" => 1
                 ],
             ],
             "success_url" => route($this->verify_route_name, ['payment' => "thawani", 'payment_id' => $unique_id]),
             "cancel_url" => route($this->verify_route_name, ['payment' => "thawani", 'payment_id' => $unique_id]),
             "metadata" => [
-                "customer" => $user_first_name.' '.$user_last_name,
+                "customer" => $this->user_first_name.' '.$this->user_last_name,
                 "order_id" => $unique_id,
-                "phone" => $user_phone
+                "phone" => $this->user_phone
             ]
         ])->json();
         Cache::forever($unique_id, $response['data']['session_id']);
@@ -81,7 +80,7 @@ class ThawaniPayment implements PaymentInterface
      */
     public function verify(Request $request): array
     {
-        $payment_id = Cache::get($request['payment_id']);
+        $payment_id = $request->payment_id!=null?$request->payment_id:Cache::get($request['payment_id']);
         Cache::forget($request['payment_id']);
         $response = Http::withHeaders([
             'content-type' => 'application/json',
@@ -91,13 +90,15 @@ class ThawaniPayment implements PaymentInterface
         if ($response['data']['payment_status'] == "paid") {
             return [
                 'success' => true,
-                'message' => __('messages.PAYMENT_DONE'),
+                'payment_id'=>$request['payment_id'],
+                'message' => __('nafezly::messages.PAYMENT_DONE'),
                 'process_data' => $response
             ];
         } else {
             return [
                 'success' => false,
-                'message' => __('messages.PAYMENT_FAILED'),
+                'payment_id'=>$request['payment_id'],
+                'message' => __('nafezly::messages.PAYMENT_FAILED'),
                 'process_data' => $response
             ];
         }

@@ -3,19 +3,18 @@
 namespace Nafezly\Payments\Classes;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Nafezly\Payments\Interfaces\PaymentInterface;
-use Nafezly\Payments\Order;
+use Nafezly\Payments\Classes\BaseController;
 
-class KashierPayment implements PaymentInterface
+class KashierPayment extends BaseController implements PaymentInterface
 {
-
-
-    private $kashier_url;
-    private $kashier_mode;
+    public  $kashier_url;
+    public  $kashier_mode;
     private $kashier_account_key;
     private $kashier_iframe_key;
-    private $kashier_currency;
-    private $app_name;
+    private $kashier_token;
+    public  $app_name;
     private $verify_route_name;
 
     public function __construct()
@@ -24,7 +23,8 @@ class KashierPayment implements PaymentInterface
         $this->kashier_mode = config("nafezly-payments.KASHIER_MODE");
         $this->kashier_account_key = config("nafezly-payments.KASHIER_ACCOUNT_KEY");
         $this->kashier_iframe_key = config("nafezly-payments.KASHIER_IFRAME_KEY");
-        $this->kashier_currency = config('nafezly-payments.KASHIER_CURRENCY');
+        $this->kashier_token = config("nafezly-payments.KASHIER_TOKEN");
+        $this->currency = config('nafezly-payments.KASHIER_CURRENCY');
         $this->app_name = config('nafezly-payments.APP_NAME');
         $this->verify_route_name = config('nafezly-payments.VERIFY_ROUTE_NAME');
     }
@@ -40,31 +40,34 @@ class KashierPayment implements PaymentInterface
      * @param null $source
      * @return string[]
      */
-    public function pay($amount, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null): array
+    public function pay($amount = null, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null): array
     {
+        $this->setPassedVariablesToGlobal($amount,$user_id,$user_first_name,$user_last_name,$user_email,$user_phone,$source);
+        $required_fields = ['amount'];
+        $this->checkRequiredFields($required_fields, 'KASHIER');
 
         $payment_id = uniqid();
 
         $mid = $this->kashier_account_key;
-        $currency = $this->kashier_currency;
         $order_id = $payment_id;
         $secret = $this->kashier_iframe_key;
-        $path = "/?payment=$mid.$order_id.$amount.$currency";
+        $path = "/?payment={$mid}.{$order_id}.{$this->amount}.{$this->currency}";
         $hash = hash_hmac('sha256', $path, $secret);
 
         $data = [
             'mid' => $mid,
-            'amount' => $amount,
-            'currency' => $currency,
+            'amount' => $this->amount,
+            'currency' => $this->currency,
             'order_id' => $order_id,
             'path' => $path,
             'hash' => $hash,
+            'source'=>$this->source,
             'redirect_back' => route($this->verify_route_name, ['payment' => "kashier"])
         ];
 
         return [
-            'payment_id'=>$payment_id,
-            'html' => $this->generate_html($amount, $data),
+            'payment_id' => $payment_id,
+            'html' => $this->generate_html($data),
             'redirect_url'=>""
         ];
 
@@ -76,7 +79,7 @@ class KashierPayment implements PaymentInterface
      */
     public function verify(Request $request): array
     {
-        if ($request["paymentStatus"] == "SUCCESS") {
+        if ($request["paymentStatus"] == "SUCCESS" && $request['signature']!=null) {
             $queryString = "";
             foreach ($request->all() as $key => $value) {
 
@@ -85,26 +88,49 @@ class KashierPayment implements PaymentInterface
                 }
                 $queryString = $queryString . "&" . $key . "=" . $value;
             }
-
             $queryString = ltrim($queryString, $queryString[0]);
-            $signature = hash_hmac('sha256', $queryString, $this->kashier_iframe_key);
+            $signature = hash_hmac('sha256', $queryString, $this->kashier_iframe_key,false);
             if ($signature == $request["signature"]) {
                 return [
                     'success' => true,
-                    'message' => __('messages.PAYMENT_DONE'),
+                    'payment_id'=>$request['merchantOrderId'],
+                    'message' => __('nafezly::messages.PAYMENT_DONE'),
                     'process_data' => $request->all()
                 ];
             } else {
                 return [
                     'success' => false,
-                    'message' => __('messages.PAYMENT_FAILED'),
+                    'payment_id'=>$request['merchantOrderId'],
+                    'message' => __('nafezly::messages.PAYMENT_FAILED'),
                     'process_data' => $request->all()
                 ];
             }
+        }else if($request['signature']==null){
+            $url_mode = $this->kashier_mode == "live"?'':'test-';
+            $response = Http::withHeaders([
+                'Authorization' => $this->kashier_token
+            ])->get('https://'.$url_mode.'api.kashier.io/payments/orders/'.$request['merchantOrderId'])->json();
+            if(isset($response['response']['status']) && $response['response']['status']=="CAPTURED"){
+                return [
+                    'success' => true,
+                    'payment_id'=>$request['merchantOrderId'],
+                    'message' => __('nafezly::messages.PAYMENT_DONE'),
+                    'process_data' => $request->all()
+                ];
+            }else{
+                return [
+                    'success' => false,
+                    'payment_id'=>$request['merchantOrderId'],
+                    'message' => __('nafezly::messages.PAYMENT_FAILED'),
+                    'process_data' => $request->all()
+                ];
+            }
+            
         } else {
             return [
                 'success' => false,
-                'message' => __('messages.PAYMENT_FAILED'),
+                'payment_id'=>$request['merchantOrderId'],
+                'message' => __('nafezly::messages.PAYMENT_FAILED'),
                 'process_data' => $request->all()
             ];
         }
@@ -115,21 +141,9 @@ class KashierPayment implements PaymentInterface
      * @param $data
      * @return string
      */
-    private function generate_html($amount, $data): string
+    private function generate_html($data): string
     {
-        return '<body><script id="kashier-iFrame"
-         src="' . $this->kashier_url . '/kashier-checkout.js"
-        data-amount="' . $amount . '"
-        data-description="Credit"
-        data-mode="' . $this->kashier_mode . '"
-        data-hash="' . $data["hash"] . '"
-        data-currency="' . $data["currency"] . '"
-        data-orderId="' . $data["order_id"] . '"
-        data-allowedMethods="card"
-        data-merchantId="' . $data["mid"] . '"
-        data-merchantRedirect="' . $data["redirect_back"] . '" 
-        data-store="' . $this->app_name . '"
-        data-type="external" data-display="ar"></script></body>';
+        return view('nafezly::html.kashier', ['model' => $this, 'data' => $data])->render();
     }
 
 }

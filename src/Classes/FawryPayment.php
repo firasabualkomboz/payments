@@ -4,21 +4,26 @@ namespace Nafezly\Payments\Classes;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
-use Nafezly\Payments\Exceptions\MissingPaymentInfoException;
-use Nafezly\Payments\Interfaces\PaymentInterface;
 
-class FawryPayment implements PaymentInterface
+use Nafezly\Payments\Interfaces\PaymentInterface;
+use Nafezly\Payments\Classes\BaseController;
+
+class FawryPayment extends BaseController implements PaymentInterface 
 {
-    private $fawry_url;
-    private $fawry_secret;
-    private $fawry_merchant;
-    private $verify_route_name;
+    public $fawry_url;
+    public $fawry_secret;
+    public $fawry_merchant;
+    public $verify_route_name;
+    public $fawry_display_mode;
+    public $fawry_pay_mode;
 
     public function __construct()
     {
         $this->fawry_url = config('nafezly-payments.FAWRY_URL');
         $this->fawry_merchant = config('nafezly-payments.FAWRY_MERCHANT');
         $this->fawry_secret = config('nafezly-payments.FAWRY_SECRET');
+        $this->fawry_display_mode = config('nafezly-payments.FAWRY_DISPLAY_MODE');
+        $this->fawry_pay_mode = config('nafezly-payments.FAWRY_PAY_MODE');
         $this->verify_route_name = config('nafezly-payments.VERIFY_ROUTE_NAME');
     }
 
@@ -34,13 +39,11 @@ class FawryPayment implements PaymentInterface
      * @return string[]
      * @throws MissingPaymentInfoException
      */
-    public function pay($amount, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null): array
+    public function pay($amount = null, $user_id = null, $user_first_name = null, $user_last_name = null, $user_email = null, $user_phone = null, $source = null): array
     {
-        if (is_null($user_id)) throw new MissingPaymentInfoException('user_id', 'FAWRY');
-        if (is_null($user_first_name)) throw new MissingPaymentInfoException('user_first_name', 'FAWRY');
-        if (is_null($user_last_name)) throw new MissingPaymentInfoException('user_last_name', 'FAWRY');
-        if (is_null($user_email)) throw new MissingPaymentInfoException('user_email', 'FAWRY');
-        if (is_null($user_phone)) throw new MissingPaymentInfoException('user_phone', 'FAWRY');
+        $this->setPassedVariablesToGlobal($amount,$user_id,$user_first_name,$user_last_name,$user_email,$user_phone,$source);
+        $required_fields = ['amount', 'user_id', 'user_first_name', 'user_last_name', 'user_email', 'user_phone'];
+        $this->checkRequiredFields($required_fields, 'FAWRY');
 
         $unique_id = uniqid();
 
@@ -48,14 +51,14 @@ class FawryPayment implements PaymentInterface
             'fawry_url' => $this->fawry_url,
             'fawry_merchant' => $this->fawry_merchant,
             'fawry_secret' => $this->fawry_secret,
-            'user_id' => $user_id,
-            'user_name' => $user_first_name.' '.$user_last_name,
-            'user_email' => $user_email,
-            'user_phone' => $user_phone,
+            'user_id' => $this->user_id,
+            'user_name' => "{$this->user_first_name} {$this->user_last_name}",
+            'user_email' => $this->user_email,
+            'user_phone' => $this->user_phone,
             'unique_id' => $unique_id,
             'item_id' => 1,
             'item_quantity' => 1,
-            'amount' => $amount,
+            'amount' => $this->amount,
             'payment_id'=>$unique_id
         ];
 
@@ -86,13 +89,15 @@ class FawryPayment implements PaymentInterface
         if ($response->offsetGet('statusCode') == 200 && $response->offsetGet('paymentStatus') == "PAID") {
             return [
                 'success' => true,
-                'message' => __('messages.PAYMENT_DONE'),
+                'payment_id'=>$reference_id,
+                'message' => __('nafezly::messages.PAYMENT_DONE'),
                 'process_data' => $request->all()
             ];
         } else if ($response->offsetGet('statusCode') != 200) {
             return [
                 'success' => false,
-                'message' => __('messages.PAYMENT_FAILED'),
+                'payment_id'=>$reference_id,
+                'message' => __('nafezly::messages.PAYMENT_FAILED'),
                 'process_data' => $request->all()
             ];
         }
@@ -100,31 +105,7 @@ class FawryPayment implements PaymentInterface
 
     private function generate_html($data): string
     {
-        return "<link rel='stylesheet' href='https://atfawry.fawrystaging.com/atfawry/plugin/assets/payments/css/fawrypay-payments.css'><script type='text/javascript' src='" . $data['fawry_url'] . "atfawry/plugin/assets/payments/js/fawrypay-payments.js'></script><script>  
-            const chargeRequest = {};
-            chargeRequest.language= 'ar-eg';
-            chargeRequest.merchantCode= '" . $data['fawry_merchant'] . "';
-            chargeRequest.merchantRefNumber= '" . $data['payment_id'] . "';
-            chargeRequest.customer = {};
-            chargeRequest.customer.name = '" . $data['user_name'] . "';
-            chargeRequest.customer.mobile = '" . $data['user_phone'] . "';
-            chargeRequest.customer.email = '" . $data['user_email'] . "';
-            chargeRequest.customer.customerProfileId = '" . $data['user_id'] . "';
-            chargeRequest.order = {};
-            chargeRequest.order.description = 'Credit';
-            chargeRequest.order.expiry = '';
-            chargeRequest.order.orderItems = [];
-            const item = {};
-            item.productSKU =1;
-            item.description ='Credit';
-            item.price =" . $data['amount'] . ";
-            item.quantity =" . $data['item_quantity'] . ";
-            chargeRequest.order.orderItems.push(item); 
-            chargeRequest.signature = '" . $data['secret'] . "';  
-            setTimeout(function(){
-                FawryPay.checkout(chargeRequest,'" . route($this->verify_route_name, ['payment' => "fawry"]) . "','" . route($this->verify_route_name, ['payment' => "fawry"]) . "');
-            },100); 
-        </script>";
+        return view('nafezly::html.fawry', ['model' => $this, 'data' => $data])->render();
     }
 
 }

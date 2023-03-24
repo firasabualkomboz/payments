@@ -8,19 +8,16 @@ use Nafezly\Payments\Exceptions\MissingPaymentInfoException;
 use Nafezly\Payments\Interfaces\PaymentInterface;
 use Nafezly\Payments\Classes\BaseController;
 
-class PaymobPayment extends BaseController implements PaymentInterface
+class PaymobWalletPayment extends BaseController implements PaymentInterface
 {
     private $paymob_api_key;
-    private $paymob_integration_id;
-    private $paymob_iframe_id;
-
+    private $paymob_wallet_integration_id;
 
     public function __construct()
     {
         $this->paymob_api_key = config('nafezly-payments.PAYMOB_API_KEY');
-        $this->paymob_integration_id = config('nafezly-payments.PAYMOB_INTEGRATION_ID');
-        $this->paymob_iframe_id = config("nafezly-payments.PAYMOB_IFRAME_ID");
         $this->currency = config("nafezly-payments.PAYMOB_CURRENCY");
+        $this->paymob_wallet_integration_id = config("nafezly-payments.PAYMOB_WALLET_INTEGRATION_ID");
     }
 
     /**
@@ -52,7 +49,6 @@ class PaymobPayment extends BaseController implements PaymentInterface
                 "amount_cents" => $this->amount * 100,
                 "items" => []
             ])->json();
-
         $get_url_token = Http::withHeaders(['content-type' => 'application/json'])
             ->post('https://accept.paymobsolutions.com/api/acceptance/payment_keys', [
                 "auth_token" => $request_new_token['token'],
@@ -75,14 +71,24 @@ class PaymobPayment extends BaseController implements PaymentInterface
                     "state" => "NA"
                 ],
                 "currency" => $this->currency,
-                "integration_id" => $this->paymob_integration_id
+                "integration_id" => $this->paymob_wallet_integration_id,
+                'lock_order_when_paid'=>true
             ])->json();
 
+        $get_pay_link = Http::withHeaders(['content-type' => 'application/json'])
+            ->post('https://accept.paymob.com/api/acceptance/payments/pay', [
+                'source'=>[
+                    "identifier"=>$this->user_phone,
+                    'subtype'=>"WALLET"
+                ],
+                "payment_token"=>$get_url_token['token']
+        ])->json(); 
         return [
             'payment_id'=>$get_order['id'],
             'html' => "",
-            'redirect_url'=>"https://accept.paymobsolutions.com/api/acceptance/iframes/" . $this->paymob_iframe_id . "?payment_token=" . $get_url_token['token']
+            'redirect_url'=>$get_pay_link['redirect_url']
         ];
+        
     }
 
     /**
@@ -136,22 +142,4 @@ class PaymobPayment extends BaseController implements PaymentInterface
         else
             return __('nafezly::messages.An_error_occurred_while_executing_the_operation');
     }
-
-    public function refund($transaction_id,$amount): array
-    {
-        $request_new_token = Http::withHeaders(['content-type' => 'application/json'])
-            ->post('https://accept.paymobsolutions.com/api/auth/tokens', [
-                "api_key" => $this->paymob_api_key
-            ])->json();
-        $refund_process = Http::withHeaders(['content-type' => 'application/json'])
-            ->post('https://accept.paymob.com/api/acceptance/void_refund/refund',['auth_token'=>$request_new_token['token'],'transaction_id'=>$transaction_id,'amount_cents'=>$amount])->json();
-
-        dd($refund_process);
-        return [
-            'transaction_id'=>$transaction_id,
-            'amount'=>$amount,
-        ];
-
-    }
-
 }
